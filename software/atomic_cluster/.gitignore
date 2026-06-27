@@ -1,0 +1,6 @@
+desktop/cluster
+*.wav
+*.o
+*.bin
+*.elf
+.DS_Store
