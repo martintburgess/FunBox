@@ -1,0 +1,6 @@
+desktop/freeze
+*.wav
+*.o
+*.bin
+*.elf
+.DS_Store
