@@ -5,7 +5,7 @@ CXX      ?= clang++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -I..
 TARGET    = cluster
 
-$(TARGET): main.cpp ../atomic_cluster_core.h ../shy_fft.h dr_wav.h
+$(TARGET): main.cpp ../atomic_cluster_core.h ../atomic_cluster_mask_core.h ../shy_fft.h dr_wav.h
 	$(CXX) $(CXXFLAGS) main.cpp -o $(TARGET)
 
 clean:
