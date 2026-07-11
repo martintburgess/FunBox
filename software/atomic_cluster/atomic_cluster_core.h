@@ -90,6 +90,13 @@ class AtomicClusterCore
         if(atoms < 1) atoms = 1;
         if(atoms > (int)kMaxTracks) atoms = (int)kMaxTracks;
         atoms_ = (size_t)atoms;
+        // Summing K independently-phased partials has a crest factor that
+        // grows with K (constructive interference gets more likely as more
+        // voices sound at once). Each partial is calibrated for a single
+        // full-scale tone, so without this the mix gets louder -- and more
+        // prone to clipping -- purely as ATOMS increases. 1/sqrt(K) keeps
+        // total power roughly constant across the ATOMS range.
+        atoms_norm_ = 1.0f / sqrtf((float)atoms_);
     }
 
     void set_speed_ms(float ms)
@@ -131,7 +138,7 @@ class AtomicClusterCore
                 reselect();      // re-choose the audible set
             }
 
-            const float wet = synth_sample();
+            const float wet = synth_sample() * atoms_norm_;
             out[i]          = (dry * (1.0f - blend_) + wet * blend_) * vol_;
         }
     }
@@ -377,8 +384,11 @@ class AtomicClusterCore
                 wet += osc_lookup(T.phase) * g;
 
             T.phase += T.inc;
-            if(T.phase >= 1.0f)
-                T.phase -= (float)(int)T.phase;
+            // floorf-based wrap handles negative phase too (unlike a bare int
+            // cast, which only strips the integer part of positive overflow
+            // and would leave a negative phase unbounded -- an out-of-range
+            // index into sine_[] below).
+            T.phase -= floorf(T.phase);
 
             // retire a faded-out, unselected, unsupported track to free its slot
             if(T.target_amp <= 0.0f && T.amp < 1e-6f && T.sel_gain < 1e-6f)
@@ -406,8 +416,14 @@ class AtomicClusterCore
         const float c     = sqrtf(energy_[k + 1]);
         const float denom = a - 2.0f * b + c;
         float       delta = 0.0f;
-        if(fabsf(denom) > 1e-12f)
+        if(fabsf(denom) > 1e-4f) // guard: near-flat triplets make this interpolation unstable
+        {
             delta = 0.5f * (a - c) / denom;
+            // Parabolic interpolation is only meaningful within half a bin either
+            // side of the detected peak -- clamp so a near-degenerate triplet
+            // can't produce a runaway frequency/amplitude estimate.
+            delta = delta < -0.5f ? -0.5f : (delta > 0.5f ? 0.5f : delta);
+        }
         const float freq = ((float)k + delta) * sample_rate_ / (float)kN;
         const float mag  = b - 0.25f * (a - c) * delta;
         inc = freq / sample_rate_; // cycles/sample
@@ -446,6 +462,7 @@ class AtomicClusterCore
     float  sample_rate_     = 48000.0f;
     size_t refresh_samples_ = 14400;
     size_t atoms_           = 16;
+    float  atoms_norm_      = 0.25f; // 1/sqrt(16), kept in sync by set_atoms()
     float  blend_           = 0.5f;
     float  vol_             = 1.0f;
     Mode   mode_            = Mode::kSharp;

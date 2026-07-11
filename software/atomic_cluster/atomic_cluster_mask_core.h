@@ -367,8 +367,11 @@ class AtomicClusterMaskCore
         const float c     = sqrtf(energy_[k + 1]);
         const float denom = a - 2.0f * b + c;
         float       delta = 0.0f;
-        if(fabsf(denom) > 1e-12f)
+        if(fabsf(denom) > 1e-4f) // guard: near-flat triplets make this interpolation unstable
+        {
             delta = 0.5f * (a - c) / denom;
+            delta = delta < -0.5f ? -0.5f : (delta > 0.5f ? 0.5f : delta);
+        }
         return ((float)k + delta) * sample_rate_ / (float)kN;
     }
 
