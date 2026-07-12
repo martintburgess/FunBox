@@ -47,6 +47,14 @@ class AtomicClusterCore
         kSmooth // crossfade between atom sets (lush)
     };
 
+    // How the random selection weights which partials become audible.
+    enum class Weighting
+    {
+        kLoud,     // weight by loudness (stable, favors fundamentals) -- default
+        kBalanced, // sqrt of loudness (flatter, more variety)
+        kEven      // uniform (picks freely across all peaks, max movement)
+    };
+
     void init(float sample_rate)
     {
         sample_rate_ = sample_rate;
@@ -77,11 +85,13 @@ class AtomicClusterCore
         set_blend(0.5f);
         set_vol(1.0f);
         mode_            = Mode::kSharp;
+        weighting_       = Weighting::kLoud;
         analysis_count_  = 0;
         select_count_    = 0;
         alive_count_     = 0;
         max_alive_count_ = 0;
         rng_             = 0x2545f491u;
+        nan_guard_tripped_ = false;
     }
 
     // ---- parameter setters (host maps knobs to these) ----
@@ -110,10 +120,15 @@ class AtomicClusterCore
     void set_blend(float b) { blend_ = clamp01(b); }   // 0 dry .. 1 wet
     void set_vol(float v)   { vol_   = v < 0.0f ? 0.0f : v; }
     void set_mode(Mode m)   { mode_  = m; }
+    void set_weighting(Weighting w) { weighting_ = w; }
 
     // diagnostics
     size_t debug_pool_count() const { return alive_count_; }
     size_t debug_max_pool_count() const { return max_alive_count_; }
+    // Latches true the first time a NaN/Inf value was caught and zeroed.
+    // Stays true until the next init() -- a deliberate "did this ever
+    // happen" flag, not a per-block status.
+    bool debug_nan_tripped() const { return nan_guard_tripped_; }
 
     // ---- audio ----
     // Mono in / mono out. The firmware feeds the left channel and copies the
@@ -138,8 +153,13 @@ class AtomicClusterCore
                 reselect();      // re-choose the audible set
             }
 
-            const float wet = synth_sample() * atoms_norm_;
-            out[i]          = (dry * (1.0f - blend_) + wet * blend_) * vol_;
+            float wet = synth_sample() * atoms_norm_;
+            if(!std::isfinite(wet))
+            {
+                wet                 = 0.0f;
+                nan_guard_tripped_ = true;
+            }
+            out[i] = (dry * (1.0f - blend_) + wet * blend_) * vol_;
         }
     }
 
@@ -317,8 +337,11 @@ class AtomicClusterCore
         for(size_t t = 0; t < kMaxTracks; t++)
             if(tracks_[t].alive)
             {
+                float w = tracks_[t].amp; // base weight = loudness
+                if(weighting_ == Weighting::kBalanced) w = sqrtf(w);
+                else if(weighting_ == Weighting::kEven) w = 1.0f;
                 cand_idx_[na] = t;
-                cand_w_[na]   = tracks_[t].amp;
+                cand_w_[na]   = w;
                 na++;
                 tracks_[t].sel_target = 0.0f;
             }
@@ -369,6 +392,16 @@ class AtomicClusterCore
             // follow the input: smooth amplitude and frequency toward targets
             T.amp += (T.target_amp - T.amp) * amp_coeff_;
             T.inc += (T.target_inc - T.inc) * freq_coeff_;
+            // A one-pole filter can never recover from a NaN/Inf input -- once
+            // poisoned it stays poisoned forever (every += toward a target still
+            // yields NaN). Zero it instead of letting one bad estimate silently
+            // corrupt this track's output for the rest of the session.
+            if(!std::isfinite(T.amp) || !std::isfinite(T.inc))
+            {
+                T.amp        = 0.0f;
+                T.inc        = 0.0f;
+                nan_guard_tripped_ = true;
+            }
 
             // audibility crossfade toward the selection target
             if(T.sel_gain != T.sel_target)
@@ -428,6 +461,10 @@ class AtomicClusterCore
         const float mag  = b - 0.25f * (a - c) * delta;
         inc = freq / sample_rate_; // cycles/sample
         amp = mag * kAmpNorm;       // calibrated by ear
+        // Belt-and-suspenders: never hand a non-finite estimate to a caller
+        // that's going to feed it into a persistent one-pole filter.
+        if(!std::isfinite(inc)) inc = 0.0f;
+        if(!std::isfinite(amp) || amp < 0.0f) amp = 0.0f;
     }
 
     static void worst_of(const float* e, size_t count, float& worst, size_t& worst_idx)
@@ -466,6 +503,7 @@ class AtomicClusterCore
     float  blend_           = 0.5f;
     float  vol_             = 1.0f;
     Mode   mode_            = Mode::kSharp;
+    Weighting weighting_    = Weighting::kLoud;
 
     float  amp_coeff_  = 0.001f;
     float  freq_coeff_ = 0.0025f;
@@ -501,6 +539,7 @@ class AtomicClusterCore
     size_t   alive_count_     = 0;
     size_t   max_alive_count_ = 0;
     uint32_t rng_             = 0x2545f491u;
+    bool     nan_guard_tripped_ = false;
 };
 
 #endif // ATOMIC_CLUSTER_CORE_H

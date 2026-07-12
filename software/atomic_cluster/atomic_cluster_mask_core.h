@@ -54,6 +54,14 @@ class AtomicClusterMaskCore
         kSmooth // crossfade the mask between selections
     };
 
+    // How the random selection weights which peaks are kept.
+    enum class Weighting
+    {
+        kLoud,     // weight by energy (stable, favors fundamentals) -- default
+        kBalanced, // sqrt of energy (flatter, more variety)
+        kEven      // uniform (picks freely across all peaks, max movement)
+    };
+
     void init(float sample_rate)
     {
         sample_rate_ = sample_rate;
@@ -94,12 +102,14 @@ class AtomicClusterMaskCore
         selected_count_= 0;
         max_peak_count_= 0;
         rng_           = 0x2545f491u;
+        nan_guard_tripped_ = false;
 
         set_atoms(16);
         set_speed_ms(300.0f);
         set_blend(0.5f);
         set_vol(1.0f);
-        mode_ = Mode::kSharp;
+        mode_      = Mode::kSharp;
+        weighting_ = Weighting::kLoud;
     }
 
     // ---- parameter setters (host maps knobs to these) ----
@@ -121,10 +131,12 @@ class AtomicClusterMaskCore
     void set_blend(float b) { blend_ = clamp01(b); }
     void set_vol(float v)   { vol_   = v < 0.0f ? 0.0f : v; }
     void set_mode(Mode m)   { mode_  = m; }
+    void set_weighting(Weighting w) { weighting_ = w; }
 
     // diagnostics (parallel to the sine core)
     size_t debug_pool_count() const { return selected_count_; }
     size_t debug_max_pool_count() const { return max_peak_count_; }
+    bool   debug_nan_tripped() const { return nan_guard_tripped_; }
 
     // ---- audio: mono in / mono out ----
     void process_block(const float* in, float* out, size_t n)
@@ -218,8 +230,13 @@ class AtomicClusterMaskCore
         {
             const size_t pos  = base + i;
             const size_t slot = pos & (kN - 1);
-            const float  wet  = ola_[slot];
-            ola_[slot]        = 0.0f; // clear for reuse when the ring wraps
+            float wet  = ola_[slot];
+            ola_[slot] = 0.0f; // clear for reuse when the ring wraps
+            if(!std::isfinite(wet))
+            {
+                wet                 = 0.0f;
+                nan_guard_tripped_ = true;
+            }
 
             const float dry   = dry_ring_[pos & (kN - 1)];
             const float mixed = dry * (1.0f - blend_) + wet * blend_;
@@ -279,7 +296,12 @@ class AtomicClusterMaskCore
     void reselect()
     {
         for(size_t i = 0; i < det_count_; i++)
-            cand_w_[i] = det_e_[i];
+        {
+            float w = det_e_[i]; // base weight = energy
+            if(weighting_ == Weighting::kBalanced) w = sqrtf(w);
+            else if(weighting_ == Weighting::kEven) w = 1.0f;
+            cand_w_[i] = w;
+        }
 
         const size_t k = atoms_ < det_count_ ? atoms_ : det_count_;
         selected_count_ = 0;
@@ -372,7 +394,8 @@ class AtomicClusterMaskCore
             delta = 0.5f * (a - c) / denom;
             delta = delta < -0.5f ? -0.5f : (delta > 0.5f ? 0.5f : delta);
         }
-        return ((float)k + delta) * sample_rate_ / (float)kN;
+        const float f = ((float)k + delta) * sample_rate_ / (float)kN;
+        return std::isfinite(f) ? f : 0.0f;
     }
 
     static void worst_of(const float* e, size_t count, float& worst, size_t& worst_idx)
@@ -409,6 +432,7 @@ class AtomicClusterMaskCore
     float  blend_           = 0.5f;
     float  vol_             = 1.0f;
     Mode   mode_            = Mode::kSharp;
+    Weighting weighting_    = Weighting::kLoud;
     float  total_scale_     = 1.0f;
 
     // input history + dry delay (both indexed by input position & (kN-1))
@@ -451,6 +475,7 @@ class AtomicClusterMaskCore
 
     size_t   max_peak_count_ = 0;
     uint32_t rng_            = 0x2545f491u;
+    bool     nan_guard_tripped_ = false;
 };
 
 #endif // ATOMIC_CLUSTER_MASK_CORE_H
