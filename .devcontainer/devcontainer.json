@@ -1,0 +1,31 @@
+{
+  "name": "FunBox Daisy Dev",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  // Persist Claude Code login + history across container rebuilds.
+  // CLAUDE_CONFIG_DIR points Claude at the mounted named volume, so
+  // credentials, settings, and project history all live on the volume.
+  "mounts": [
+    "source=funbox-claude,target=/home/vscode/.claude,type=volume"
+  ],
+  "remoteEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude"
+  },
+
+  // Fix volume ownership, then build the Daisy libraries so pedals are
+  // ready to compile.
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  "remoteUser": "vscode",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.makefile-tools"
+      ]
+    }
+  }
+}
