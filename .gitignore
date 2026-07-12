@@ -1,1 +1,21 @@
 .DS_Store
+
+# Firmware build output
+build/
+
+# Compiled / linker artifacts
+*.o
+*.a
+*.elf
+*.bin
+*.hex
+*.d
+*.lst
+*.map
+
+# Generated audio from the desktop test tools
+*.wav
+
+# Desktop test-tool binaries (built from software/*/desktop)
+software/atomic_cluster/desktop/cluster
+software/freeze/desktop/freeze
